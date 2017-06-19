@@ -1,0 +1,339 @@
+#include<stdio.h>
+#include<stdlib.h>
+#include<ctime>
+#include<iostream>
+#include<math.h>
+
+// CUDA header files
+#include "cuda.h"
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
+
+//Struct for holding angle and start point of Spaceship
+typedef struct 
+{
+	double angle;
+	double value;
+	bool flag;
+	bool check;
+
+}init_angle_and_value;
+
+
+//Space Bodies  struct
+typedef struct
+{
+	double mass;
+	double pos_x;
+	double pos_y;
+
+}bodies;
+//fucntion declreation 
+#define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
+
+//CPU DECLERATION
+__host__ double Cdistance(double x2, double y2, double x1, double y1);
+__host__ double Cforce(double mass_black_hole, double mass_space_ship, double ri);
+
+//GPU FUNCTION DECLEARATION
+__device__ double distance(double x2, double y2, double x1, double y1);//Distance calculation
+__device__ double force(double mass_black_hole, double mass_space_ship, double ri);//force calc function
+
+
+__global__ void sapce_ship_travel(int black_hole_count,bodies *black_hole, init_angle_and_value *start_point, double delta_time, double MPI);
+
+
+
+//Defining constant values
+const double space_range_from = -10;
+const double space_range_to = 10;
+double init_space_ship_y = -10;		
+const double MPI = 3.14159265359;
+const double delta_time = 0.0001;
+
+
+
+init_angle_and_value *value_array_host;
+
+int main(int argc, char** argv)
+{
+  printf("##...CPU Program Started...##\n");
+	//
+	//Start position of spaceship
+	//
+	//allocating array memory for holding SS starting position and angle
+	init_angle_and_value *vlaues_array = (init_angle_and_value *)malloc(sizeof(init_angle_and_value)*19000);
+  printf("Allocating memory for starting points\n");
+	//total count of starting poisition
+	int total_x_start =0;
+
+	//generating starting points
+	for (float i = -5.0; i <=5.0; )
+	{
+		for (int j = -45; j <=45; j++)
+		{
+			vlaues_array[total_x_start].angle = j;
+			vlaues_array[total_x_start].value = i;
+			vlaues_array[total_x_start].flag = false;
+			vlaues_array[total_x_start].check = false;
+			total_x_start++;
+		}
+		i+=0.1;
+	}
+   printf("Generating starting points\n");
+	//
+	//Black hole creation and allocation
+	//
+	//generating count of black holes
+	int black_hole_count = 22;
+	bodies* black_hole = (bodies*)malloc(black_hole_count*sizeof(bodies));
+	printf("Black hole count is set and black hole memory allocated \n");
+	//
+	//Allocating Position of Black hole
+	//
+	int i = 0;
+	while (black_hole_count>i)
+	{
+		black_hole[i].pos_x = i * 10 % 10;;
+		black_hole[i].pos_y = i*i * 10 % 10;
+		black_hole[i].mass = 5.0;
+		
+		i++;
+	}
+ 	printf("Black hole are loded\n");
+	//
+	//CPU PROGRAM
+	//
+	////Start
+   printf("Spaceship travel computing started\n");
+	double Cspace_ship_y = 0.0;
+	double Cspace_ship_x;
+	int Cangle;
+	double Cdistance_constant = 0.0;
+	double Csummation_force = 0.0;
+	const double Cspace_ship_mass = 10.0;
+	
+	clock_t start = clock();
+	for (size_t i = 0; i < total_x_start-1; i++)
+	{
+		Cspace_ship_x = vlaues_array[i].value;
+		Cangle = vlaues_array[i].angle;
+		Cspace_ship_y = -10.0;
+
+		while (Cspace_ship_y < 10.0)
+		{
+			for (size_t i = 0; i < black_hole_count; i++)
+			{
+					Cdistance_constant=0;
+					Cdistance_constant = Cdistance(Cspace_ship_x, Cspace_ship_y, black_hole[i].pos_x, black_hole[i].pos_y);
+				
+				if(Cdistance_constant > 0)
+				{			
+					Csummation_force += Cforce(black_hole[i].mass, Cspace_ship_mass , Cdistance_constant);
+				}
+				else
+				{		
+					break;
+				}			
+
+			}
+			if (Csummation_force >=20)
+			{
+      			break;
+            
+			}
+			Cspace_ship_x += (delta_time*sin(Cangle*MPI / 180));
+			if(Cspace_ship_x>space_range_to || Cspace_ship_x<space_range_from)
+				break;
+			Cspace_ship_y += (delta_time*cos(Cangle*MPI / 180));
+		}
+
+	}
+
+	clock_t end = clock();
+printf("Spaceship travel computing Eneded\n");
+	double elapsed_time = (end - start) / (double)1000;//calculating time elapsed for computation
+
+	printf("Implementation time in CPU is %lf milliseconds\n", elapsed_time);//Printfs the time elapsed on screen
+  printf("\n##...CPU Program Ended...##\n");
+	////CPU PROGRAM ENDS
+ printf("#\n#\n#\n##...GPU Program Started...##\n#\n#\n#\n");
+ //Allocating memory for copying init values of starting point to GPU
+	if(cudaMalloc((void**)&value_array_host, sizeof(init_angle_and_value)*total_x_start) == cudaSuccess)
+		printf("Success Allocated memory in GPU for start point\n");
+	else
+		printf("failed");
+	//copying values to GPU
+	if(cudaMemcpy(value_array_host,vlaues_array,sizeof(init_angle_and_value)*total_x_start,cudaMemcpyHostToDevice) == cudaSuccess)
+		printf("copying start points values to GPU \n");
+
+
+	//Allocating memory in GPU
+	bodies *black_hole_device;
+	if(cudaMalloc((void**)&black_hole_device,sizeof(bodies)*black_hole_count) == cudaSuccess)
+		printf("Allocating memory in GPU for Black Hole \n");
+
+
+	//Copying black hole from cpu to gpu
+	if(cudaMemcpy(black_hole_device,black_hole,sizeof(bodies)*black_hole_count,cudaMemcpyHostToDevice) == cudaSuccess)
+		printf("Copying black hole from cpu to gpu \n");
+	//
+	//Timer starting
+	clock_t startG = clock();
+
+	//calling kernal funcation for init GPU 
+	sapce_ship_travel<<< 9190,1 >>>(black_hole_count, black_hole_device, value_array_host, 0.001 , 3.14159265359);
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) 
+		printf("Error: %s\n", cudaGetErrorString(err));
+	//Timer stop
+	clock_t endG = clock();
+
+	//Copy flags from Device to Host
+	cudaMemcpy(vlaues_array, value_array_host , sizeof(init_angle_and_value)*total_x_start, cudaMemcpyDeviceToHost);
+	//File to get strat  points of x
+	FILE *output;
+	output = fopen("Plot.csv", "w+");
+
+	for (int i = 0; i < total_x_start; i++)
+	{
+		if(vlaues_array[i].flag == true)
+		{
+			fprintf(output,"%f,%f,%d \n",vlaues_array[i].angle,vlaues_array[i].value,vlaues_array[i].check);
+		} 
+
+	}
+	fclose(output);
+	//
+	//Time elapsed
+	//
+	double elapsed_timeG = (endG - startG)/(double)CLOCKS_PER_SEC;//calculating time elapsed for computation
+	printf("Implementation time in GPU is %lf fractional seconds\n", elapsed_timeG);//Printfs the time elapsed on screen
+ printf("\n##...GPU Program Ended...##\n");
+
+}
+
+
+//
+//Function for calculating distance between spaceship and black hole
+//
+//parameters to ber passed position of blackhole(x,y) position of spaceship(x,y)
+ __host__ double Cdistance(double x2, double y2, double x1, double y1) {
+	return abs(sqrt(((x2 - x1)*(x2 - x1)) + ((y2 - y1)*(y2 - y1))));
+}
+
+
+// Force calculating function 
+//
+//parameters passed mass of black hole, mass of spaceship and distance between spaceship and blackhole
+//
+__host__  double Cforce(double mass_black_hole, double mass_space_ship, double ri) {
+	return (ri * mass_black_hole * mass_space_ship) / abs(ri*ri*ri);
+}
+
+//
+//Function for calculating distance between spaceship and black hole
+//
+//parameters to ber passed position of blackhole(x,y) position of spaceship(x,y)
+ __device__ double distance(double x2, double y2, double x1, double y1) {
+	return abs(sqrt(((x2 - x1)*(x2 - x1)) + ((y2 - y1)*(y2 - y1))));
+}
+
+
+// Force calculating function 
+//
+//parameters passed mass of black hole, mass of spaceship and distance between spaceship and blackhole
+//
+__device__  double force(double mass_black_hole, double mass_space_ship, double ri) {
+	return (ri * mass_black_hole * mass_space_ship) / abs(ri*ri*ri);
+}
+
+//
+//GPU function
+//
+//parameters to be passed
+__global__ void sapce_ship_travel(int black_hole_count,bodies *black_hole, init_angle_and_value *start_point, double delta_time, double MPI)
+{
+	
+	int threadId = blockIdx.x + threadIdx.x;
+	//printf("%d \n" , threadId);
+	int initial_time =0 ;
+	float summation_force;
+	double ri=0;
+	double space_ships_new_x, space_ship_new_y;
+	if(start_point[threadId].value != NULL)
+	{
+	//start_point[threadId].check = true;
+		
+	//
+	//Space ship 
+	//
+	bodies space_ship;
+	space_ship.mass=10.0;
+	space_ship.pos_y=-10.0;
+	space_ship.pos_x = start_point[threadId].value;
+
+	while (initial_time>=0) {
+	//setting summation_force to zero
+	 summation_force = 0.0;
+	
+
+	//The for loop computes the summation of forces that acts on the space ship
+	for (int i = 0; i < black_hole_count; i++) {
+		//.................Calculating the distance between the blackholes and the spaceship...........
+		ri = distance(space_ship.pos_x, space_ship.pos_y, black_hole[i].pos_x, black_hole[i].pos_y);
+		//.................calculating force of each black hole on spaceship and adds up .........
+		if(ri > 0)
+		{			
+			summation_force += force(space_ship.mass, black_hole[i].mass, ri);
+		}
+		else
+		{
+		
+			break;
+		}
+	}
+
+
+	//.................Checking whether force applied upon spaceship exceeded 4...................
+	if (summation_force >= 20 )
+	{
+	//printf("Force exceeded threshold limit %d \n", threadId);
+		break;
+		
+	}
+	else
+	{
+		
+		//.......................computing spaceship X co-ordinate...................
+		space_ships_new_x = space_ship.pos_x + (delta_time*sin(start_point[threadId].angle*MPI/180));		
+		
+		//.......................computing spaceship Y co-ordinate...........................
+		space_ship_new_y = space_ship.pos_y + (delta_time*cos(start_point[threadId].angle*MPI/180));		
+		
+		//.......................updating old position of sapceship with new position............
+		space_ship.pos_x = space_ships_new_x;
+		space_ship.pos_y = space_ship_new_y;
+
+		if(space_ships_new_x > 10 || space_ships_new_x <-10){
+			break;
+		}
+		//.......................checking whether spaceship reached destination.....................
+		if (space_ship.pos_y >= 10.0)
+		{
+			start_point[threadId].flag = true;
+			break;
+			
+		}		
+		
+		//.......................updating time.......................................
+		initial_time+=delta_time;
+				
+	}
+	
+  }
+}
+	__syncthreads();
+
+
+}
